@@ -1,0 +1,129 @@
+---
+title: "Using ACLED HW"
+author: "Riley Nelson"
+date: "2025-11-04"
+output: html_document
+---
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+library(osmdata) 
+library(leaflet)
+library(glue)
+library(tidyverse)
+library(dataverse)
+library(paletteer)
+library(gtsummary)
+library(acledR)
+library(lubridate)
+
+result_Mex <- acled_api(email = Sys.getenv('acled_email'), 
+                        password = Sys.getenv('acled_password'), 
+                        start_date = '2021-01-01', 
+                        end_date = '2024-12-31', 
+                        country = 'Mexico'
+)
+
+Mex_events <- result_Mex |>
+  filter(event_type %in% c("Battles", "Explosions/Remote violence", "Violence against civilians"))|>
+  mutate(event_date = as.Date(event_date)) |>
+  mutate(longitude = as.numeric(longitude), 
+         latitude = as.numeric(latitude))|>
+  select(event_id_cnty, event_date, year, disorder_type, event_type, sub_event_type, actor1, actor2, interaction, civilian_targeting, country, admin1, admin2, location, longitude, latitude, notes, fatalities, geo_precision, source)
+
+
+```
+
+1. When collecting event data, I chose to select Mexico's conflict data from 2021-2024, filtering for battles, explosion/remote violence, and violence against civilians. I wanted to narrow down event types to violent conflict and exclude protests, riots, and strategic developments in order to focus armed conflict, violent assaults, and criminal clashes. Here, I pulled data from 2021 to 2024 to examine the violent trends in the region to determine the peaks and drops of possible cartel and criminal organization activity. Finally, I select all the column I believe to be relevant to code the rest of my data and later gather detailed insights on the actors and event descriptions for the interactive map. 
+
+
+Making a Timeline 
+```{r, warning=FALSE}
+#can also count over days or weeks 
+
+Mex_event_count <- Mex_events |>
+  filter(event_type%in% c("Battles", "Explosions/Remote violence", "Violence against civilians"))|>
+  count(event_date,event_type) |>
+  complete(event_date = full_seq(event_date, period=1), 
+           nesting(event_type), 
+           fill=list(n=0)
+  )|>
+  group_by(event_type)|>
+  mutate(rolling_count = zoo::rollsum(n, 
+                                      k=30, 
+                                      na.pad = T))
+
+Mex_event_timeline <- ggplot(Mex_event_count, aes(x= event_date, y = rolling_count, color = event_type)) +
+  geom_line()+
+  theme_bw()+
+  labs(x= 'Date', 
+       y= '30 Day Count of Events', 
+       color = 'Event Type', 
+       title = "Mexico's Conflict Event Trends", 
+       caption = 'Source: ACLED') +
+  scale_x_date(date_labels = "%b '%y", 
+               date_breaks = '3 month'
+  )
+Mex_event_timeline
+
+```
+
+2. These results show that violence against civilians, including mostly armed violence or cartel/criminal group clashes, occur the most frequently between 2021-2024. We can see a steep incline in June 2021 and a significant drop in December-January 2024, and most recently two high peaks in late June 2024 and in October 2024. Battle trends are relatively stable at approximately 100 event counts over 30 days, as well as stable explosion/remote violence rates at very low event counts.
+
+These fluctuations likely reflecting the increase and decrease of cartel-related confrontations and security operations across Mexican states. The steep incline in mid-2012 may correspond to intensified conflict between major criminal organization, such as the Jalisco New Generation Cartel (CJNG) and the Sinaloa Cartel, particularly in contested central Mexican states. Military deployments and state-level crackdowns may result in short-term spikes in reported violence as rival groups or gangs respond. Spikes the end of 2024 may coincide with the current administration's drive to crackdown of cartel activity through Mexican law enforcement operations that trigger retaliatory violence.  
+
+
+Interactive event map
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+mex_base_map <- leaflet() |>
+  addTiles() 
+
+mexico_box <- osmdata::getbb("Mexico")
+
+mex_base_map
+mexico_box
+
+#Set zoom to 6/5.5 for southern mexico
+mex_event_map <- mex_base_map |>
+  setView(lng = -100.3667, lat = 19.5000, zoom = 5)
+
+mex_event_map
+
+#find a way to code, if the admin2 if different than the location, include the location in notes
+mex_map_events <- Mex_events |>
+  filter(year(event_date) == 2024) |> 
+  filter(geo_precision %in% c(1, 2)) |>
+  mutate(formatted_notes = glue::glue('Date: {event_date}
+                                      <br> 
+                                      State: {admin1} 
+                                      <br> 
+                                      Local Municipality: {admin2}
+                                      <br>
+                                      Event: {sub_event_type}
+                                      <br>
+                                      Actor 1: {actor1}
+                                      <br> 
+                                      Actor 2: {actor2}
+                                      <br>
+                                      Description: {notes} 
+                                      <br>')
+  )
+mex_map_events
+
+```
+
+Clustered Interactive Map of Mexico by Conflicts
+```{r}
+#later add options later for a list of extra options for tile layers
+clustered_mex_map <- mex_event_map |>
+  addAwesomeMarkers(
+    data = mex_map_events, 
+    lng = ~ longitude, 
+    lat = ~ latitude, 
+    clusterOptions = markerClusterOptions(), 
+    popup = ~ formatted_notes
+  )
+clustered_mex_map
+```
+
+3. I created an interactive map of Mexico displaying violence events in 2024 to facilitate a geographic investigation of how cartel and organized criminal violence varies across Mexican states and municipalities. Each point on the map represents a violent event, clustered in regions with a higher density of conflicts. The popups for each event includes details on the event type, actors involved, and a description of the incident. 
+
+The majority of events are concentrated around central Mexico, particularly in Michoacan, Guanajuato, Jalisco, Guerrero, Morelos, and Mexico City. These states has the most contested territories between CJNG, Sinaloa, the Gulf Cartel, Cartel del Noreste, and their regional splinter groups. States with high densities of events reflects battles for control of trafficking routes, extortion territories, and local law-enforcement interventions. In contrast, northern states, such as Tamaulipas and Chihuahua show consistent but more dispersed violence, typically associated to smuggling corridors. Most importantly, this map highlights geographic hotspots and can be used to track which areas require more security operations. 
